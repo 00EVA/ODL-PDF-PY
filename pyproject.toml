@@ -1,18 +1,40 @@
 [project]
 name = "odl-pdf"
 version = "0.1.0"
-description = "OpenDataLoader-PDF — native Python rewrite (Track B: pikepdf + pypdf)"
+description = "Native Python PDF → Markdown/JSON structure extraction (pikepdf + pypdf)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+authors = [{ name = "the OpenDataLoader-PDF authors" }]
+keywords = ["pdf", "markdown", "extraction", "parsing", "document", "json", "pikepdf", "pypdf"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Markup",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "pikepdf>=10.7.2",
     "pypdf>=6.12.2",
-    # Lets pypdf decrypt password-protected/encrypted PDFs (e.g. supplier
-    # certs). Pure-wheel, keeps clone-and-go. Without it, encrypted inputs
-    # raise DependencyError instead of extracting.
+    # Lets pypdf decrypt password-protected/encrypted PDFs. Pure-wheel, keeps
+    # clone-and-go. Without it, encrypted inputs raise DependencyError instead
+    # of extracting.
     "cryptography>=3.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/00EVA/ODL-PDF-PY"
+Repository = "https://github.com/00EVA/ODL-PDF-PY"
+Issues = "https://github.com/00EVA/ODL-PDF-PY/issues"
+
+[project.scripts]
+odl-pdf = "odl_pdf.__main__:main"
 
 [project.optional-dependencies]
 # Hybrid AI mode: page rendering (pypdfium2) + AWS Bedrock vision (boto3).
