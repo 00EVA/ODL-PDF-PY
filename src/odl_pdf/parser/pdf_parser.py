@@ -314,26 +314,45 @@ class PdfParser:
         )
         _glyph_hits = [0]
         _fallback_hits = [0]
+        # Buffer for a degenerate-position run whose text must be carried onto
+        # the NEXT real chunk (see the tm=(0,0) handling below).
+        _pending_prefix = [""]
 
         def visitor(text, cm, tm, font_dict, font_size):
             if not text or not text.strip():
                 return
-            # Guard: Jira/wkhtmltopdf-generated PDFs with y-flipped CTM frames
-            # emit a PHANTOM pre-position run at the CTM translation origin
-            # before the actual Td/Tm repositioning. pypdf reports it at
-            # (cm[4], cm[5]) because tm origin is (0,0); the real glyph renders
-            # elsewhere. These phantoms inflate the chunk count ~26x, trip
-            # false frame-rejection in bordered-table detection, and shatter
-            # group_lines by injecting a baseline outlier between real glyphs.
-            # Drop ONLY when tm origin is (0,0) AND the CTM is y-flipped
-            # (cm[3] < 0 — the hallmark of HTML-to-PDF exporters). Normal
-            # LaTeX/prose PDFs use positive cm[3]; their tm=(0,0) runs carry
-            # real content (verified: 2408.02509v1, 1901.03003) and must NOT
-            # be dropped.
+            # HTML-to-PDF exporters (wkhtmltopdf etc.) with y-flipped CTM frames
+            # emit each cell's FIRST glyph-run with a degenerate text-matrix
+            # origin tm=(0,0). pypdf then resolves it to the CTM translation
+            # origin (cm[4], cm[5]) — NOT where the glyph actually renders. The
+            # rest of the value follows in a normally-positioned run.
+            #
+            # Earlier code DROPPED these outright (to kill the ~26x whitespace-
+            # phantom inflation those exporters also produce). But whitespace is
+            # already filtered by the not-text.strip() guard above, so this
+            # branch only ever fired on REAL content — it silently ate the first
+            # letter of every form-field value ("Closed"->"los ed").
+            #
+            # Fix: don't drop the text — buffer it and prepend it to the next
+            # normally-positioned run (its true continuation, which carries the
+            # correct page coordinates). Empirically every such degenerate run
+            # is immediately followed by exactly one normal run, so a single
+            # one-slot buffer reconstructs the value losslessly
+            # (' C'+'los'->'Closed', ' Q'+'u'->'Quality').
+            #
+            # Guarded on tm origin (0,0) AND y-flipped CTM (cm[3] < 0 — the
+            # hallmark of HTML-to-PDF exporters); normal LaTeX/prose PDFs use
+            # positive cm[3] and their tm=(0,0) runs carry real, correctly
+            # positioned content and must NOT be touched.
             if (
                 tm and abs(tm[4]) < 0.01 and abs(tm[5]) < 0.01
                 and cm and cm[3] < 0
             ):
+                # Carry this run's text onto the next real chunk. Strip the
+                # exporter's edge whitespace (a leading separator space and any
+                # trailing newline pypdf appends) but keep interior text so
+                # multi-glyph degenerate runs survive intact.
+                _pending_prefix[0] += text.strip(" \t\r\n")
                 return
             try:
                 x, y = _apply_ctm(cm, tm[4], tm[5]) if cm and tm else (tm[4], tm[5])
@@ -343,12 +362,11 @@ class PdfParser:
                 #   font_size * |tm[3]| * |cm[3]|
                 # where tm[3] is the text-matrix vertical scale and cm[3] the
                 # CTM vertical scale. For normal PDFs tm[3]=1.0 so this is
-                # backward-compatible (e.g. lorem heading 267*1.0*0.12=32.0,
-                # matching the JAR oracle 32.005). Omitting |tm[3]| caused a 33x
-                # UNDER-estimate on PDFs that set Tf=1 and scale via the text
-                # matrix (e.g. MGT-F14: 1.0*33.25*0.585=19.5pt, not 0.585pt) —
-                # which collapsed the line-grouping gap and shattered the page
-                # into one glyph per line (0% word recall).
+                # backward-compatible (e.g. a 267*1.0*0.12=32.0 heading).
+                # Omitting |tm[3]| caused a 33x UNDER-estimate on PDFs that set
+                # Tf=1 and scale via the text matrix (1.0*33.25*0.585=19.5pt,
+                # not 0.585pt) — which collapsed the line-grouping gap and
+                # shattered the page into one glyph per line (0% word recall).
                 cm_scale = abs(cm[3]) if cm and cm[3] else 1.0
                 tm_scale = abs(tm[3]) if tm and tm[3] else 1.0
                 base = float(font_size) if font_size else 1.0
@@ -366,7 +384,18 @@ class PdfParser:
                     width_est = 0.5 * fs * len(text)
                     _fallback_hits[0] += 1
 
-                bbox = BoundingBox.of(index, x, y, x + width_est, y + fs)
+                # Prepend any buffered degenerate-position prefix (the cell's
+                # first glyph, see above). It renders immediately to the LEFT of
+                # this run, so widen the box leftward by an em-estimate of the
+                # prefix; the right edge (the run's true advance) is unchanged.
+                left = x
+                if _pending_prefix[0]:
+                    prefix = _pending_prefix[0]
+                    _pending_prefix[0] = ""
+                    left = x - 0.5 * fs * len(prefix)
+                    text = prefix + text
+
+                bbox = BoundingBox.of(index, left, y, x + width_est, y + fs)
                 chunk = TextChunk(
                     bbox,
                     value=text,
@@ -383,6 +412,16 @@ class PdfParser:
             reader.pages[index].extract_text(visitor_text=visitor)
         except Exception:  # noqa: BLE001
             logger.warning("Text extraction failed on page %d", index + 1, exc_info=True)
+
+        # Defensive: a degenerate-position run is always followed by a normal run
+        # in practice, but if one trails with no continuation, surface it rather
+        # than silently dropping its text.
+        if _pending_prefix[0]:
+            logger.warning(
+                "Page %d: orphaned degenerate-position prefix %r (no following run)",
+                index + 1, _pending_prefix[0][:20],
+            )
+            _pending_prefix[0] = ""
 
         for chunk in chunks:
             page.push_text(chunk)

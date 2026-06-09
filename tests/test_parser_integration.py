@@ -17,6 +17,7 @@ from odl_pdf.parser import parse_pdf
 SAMPLES = Path(__file__).resolve().parents[2] / "opendataloader-pdf" / "samples" / "pdf"
 LOREM = SAMPLES / "lorem.pdf"
 CID = Path(__file__).resolve().parents[2] / "spike" / "cid" / "cid-german.pdf"
+DEGENERATE = Path(__file__).resolve().parent / "fixtures" / "degenerate_first_glyph.pdf"
 
 
 @pytest.mark.skipif(not LOREM.exists(), reason="sample lorem.pdf not present")
@@ -45,3 +46,18 @@ def test_cid_german_unicode_fidelity():
     assert text.count("�") == 0, "no replacement characters allowed"
     assert "Grundüberlegungen" in text
     assert sum(text.count(c) for c in "üöä") > 100
+
+
+@pytest.mark.skipif(not DEGENERATE.exists(), reason="degenerate-glyph fixture not present")
+def test_degenerate_first_glyph_recovered():
+    """HTML-to-PDF exporters (wkhtmltopdf etc.) emit each value's first glyph at
+    a degenerate text-matrix origin tm=(0,0). The parser must carry that glyph
+    onto the value's continuation run instead of dropping it — otherwise
+    "Closed" loses its 'C' and renders "losed". Regression guard for the
+    first-letter-loss bug on per-glyph exports."""
+    doc = parse_pdf(DEGENERATE)
+    text = "".join(p.text for p in doc.pages)
+    assert "Closed" in text, f"first-letter 'C' dropped: {text!r}"
+    assert "Quality" in text, f"first-letter 'Q' dropped: {text!r}"
+    assert "losed" not in text.replace("Closed", "")
+    assert "uality" not in text.replace("Quality", "")
